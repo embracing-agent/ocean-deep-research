@@ -126,11 +126,13 @@ def chart_cost_structure(pnls) -> str:
     ax.set_xticks([0, .2, .4, .6, .8, 1.0])
     ax.set_xticklabels(["0", "20%", "40%", "60%", "80%", "100%"])
     _style(ax, "成本结构对比（占总收入比例，基准情景 M=120）", grid_axis="x")
-    ax.legend(loc="upper center", bbox_to_anchor=(0.42, -0.10), ncol=6,
+    ax.legend(loc="upper center", bbox_to_anchor=(0.45, -0.12), ncol=6,
               frameon=False, fontsize=8.8, labelcolor=INK2, handlelength=1.1,
               columnspacing=1.2)
-    ax.text(1.24, -0.9, "含业主机会成本 $6,000/月与维护性资本支出计提",
-            ha="right", fontsize=8, color=INK3)
+    fig.text(0.5, -0.10,
+             "数字为占总收入百分比。「其它经营费用」含业主机会成本 $6,000/月、"
+             "维护性资本支出计提与损耗",
+             ha="center", fontsize=8.2, color=INK3)
     return _save(fig, "fig01_cost_structure.png")
 
 
@@ -217,26 +219,20 @@ def chart_phase(m_grid, rent_grid, winner, names, metric_label="ROIC") -> str:
               extent=[m_grid[0], m_grid[-1], rent_grid[0], rent_grid[-1]],
               interpolation="nearest", alpha=0.92, zorder=2)
 
-    # 区域直接标注（relief 规则：identity 不单靠颜色）
-    placed = set()
-    for i in range(0, len(rent_grid), 6):
-        for j in range(0, len(m_grid), 7):
-            w = winner[i][j]
-            if w in placed or w < 0:
-                continue
-            ax.text(m_grid[j], rent_grid[i], names[w], color="#ffffff",
-                    fontsize=11, fontweight="bold", ha="center", va="center",
-                    zorder=5,
-                    path_effects=None)
-            placed.add(w)
-    if any(w < 0 for row in winner for w in row):
-        for i in range(len(rent_grid) - 1, -1, -1):
-            js = [j for j in range(len(m_grid)) if winner[i][j] < 0]
-            if len(js) > 6:
-                ax.text(m_grid[js[len(js) // 2]], rent_grid[i], "三者皆亏损",
-                        color=INK2, fontsize=10.5, ha="center", va="center",
-                        zorder=5, fontweight="bold")
-                break
+    # 区域直接标注放在各自胜出区域的重心（relief 规则：identity 不单靠颜色）
+    regions: Dict[int, List] = {}
+    for i, r in enumerate(rent_grid):
+        for j, m in enumerate(m_grid):
+            regions.setdefault(winner[i][j], []).append((m, r))
+    for w, cells in regions.items():
+        if len(cells) < 0.03 * len(m_grid) * len(rent_grid):
+            continue
+        cx = sum(c[0] for c in cells) / len(cells)
+        cy = sum(c[1] for c in cells) / len(cells)
+        label = names[w] if w >= 0 else "三者皆亏损"
+        ax.text(cx, cy, label, color="#ffffff" if w >= 0 else INK2,
+                fontsize=11.5, fontweight="bold", ha="center", va="center",
+                zorder=5, rotation=0 if w >= 0 else 90)
 
     _style(ax, f"最优业态相位图：argmax {metric_label} = f(需求密度, 租金)",
            xlabel="商圈需求密度 M（潜在到店人次/日）",
@@ -258,28 +254,43 @@ def chart_hourly(days, names, weekend_label="工作日") -> str:
                              sharey=False)
     for k, (ax, d, name) in enumerate(zip(axes, days, names)):
         hs = sorted(d.hourly_potential.keys())
+        open_hs = [h for h in hs if d.hourly_capacity[h] > 0]
         pot = [d.hourly_potential[h] for h in hs]
         srv = [d.hourly_served[h] for h in hs]
-        cap = [d.hourly_capacity[h] for h in hs]
-        ax.bar(hs, pot, width=0.66, color="#d8d7d2", zorder=3, label="潜在需求")
-        ax.bar(hs, srv, width=0.66, color=SERIES[k], zorder=4, label="实际服务")
-        ax.step(hs, cap, where="mid", color=BAD, linewidth=1.8, zorder=5,
-                label="座位产能上限")
+        cap = d.hourly_capacity[open_hs[0]]
+
+        # 潜在需求画描边（未被服务的部分才看得出来），实际服务画实心
+        ax.bar(hs, pot, width=0.72, facecolor="none", edgecolor="#a9a7a0",
+               linewidth=1.2, zorder=3, label="潜在需求")
+        ax.bar(hs, srv, width=0.72, color=SERIES[k], zorder=4, label="实际服务")
+        ax.hlines(cap, open_hs[0] - 0.5, open_hs[-1] + 0.5, color=BAD,
+                  linewidth=1.8, zorder=5, label="座位产能上限")
+        ax.text(open_hs[0] - 0.3, cap, f" 产能 {cap:.0f}", color=BAD,
+                fontsize=8.5, va="bottom", ha="left", zorder=6)
+
         ax.set_xticks([11, 13, 15, 17, 19, 21])
         ax.set_xticklabels(["11", "13", "15", "17", "19", "21"])
+        ax.set_ylim(0, max(max(pot), cap) * 1.22)
         _style(ax, name)
         ax.set_xlabel("时刻", color=INK2, fontsize=9)
         if k == 0:
             ax.set_ylabel("人次/小时", color=INK2, fontsize=9)
         lost = d.lost_covers
-        ax.text(0.97, 0.94, f"当日流失 {lost:.0f} 人次", transform=ax.transAxes,
-                ha="right", va="top", fontsize=9,
-                color=BAD if lost > 3 else INK3, fontweight="bold")
-    axes[0].legend(loc="upper left", frameon=False, fontsize=8.5,
-                   labelcolor=INK2)
+        overflow = sum(max(0.0, p_ - cap) for p_ in pot)
+        peak = max(srv[i] / cap for i in range(len(hs)) if cap > 0)
+        note = f"峰值利用率 {peak*100:.0f}%\n高峰溢出 {overflow:.0f} 人次"
+        if overflow > 0.5:
+            note += f"（排队消化 {overflow - lost:.0f}，流失 {lost:.0f}）"
+        ax.text(0.98, 1.005, note, transform=ax.transAxes, ha="right",
+                va="bottom", fontsize=8.6, linespacing=1.6,
+                color=BAD if overflow > 0.5 else INK3, fontweight="bold")
+    h, lb = axes[0].get_legend_handles_labels()
+    fig.legend(h, lb, loc="lower center", bbox_to_anchor=(0.5, -0.13), ncol=3,
+               frameon=False, fontsize=9, labelcolor=INK2,
+               handlelength=1.4, columnspacing=2.0)
     fig.suptitle(f"{weekend_label}时段剖面：需求集中在两个窄窗口，产能过剩与产能不足同时存在",
                  color=INK, fontsize=12.5, fontweight="bold", x=0.045,
-                 ha="left", y=1.06)
+                 ha="left", y=1.10)
     fig.tight_layout()
     return _save(fig, "fig05_hourly_profile.png")
 
@@ -376,26 +387,32 @@ def chart_tornado(rows_by_format: Dict[str, List[Dict]]) -> str:
 
 def chart_frontier(curves, points) -> str:
     fig, ax = _fig(9.4, 5.4)
+    XLO, XHI, YHI = 10.0, 130.0, 78.0
     ramp = ["#c4d9f5", "#95bdec", "#5f9ce2", "#2a78d6"]
     for k, (g, pts) in enumerate(sorted(curves.items())):
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
         ax.plot(xs, ys, color=ramp[min(k, 3)], linewidth=1.7, zorder=3)
-        ax.text(xs[-1] - 1, ys[-1] + 0.6, f"每座位小时贡献 ${g:.0f}",
-                color=ramp[min(k, 3)], fontsize=8.8, ha="right",
-                fontweight="bold")
+        # 标签贴在射线离开可视区之前的最后一点上，而不是曲线数据的末端
+        inside = [(x, y) for x, y in zip(xs, ys) if y <= YHI - 4 and x <= XHI]
+        if inside:
+            lx, ly = inside[-1]
+            ax.text(lx + 1.5, ly, f"${g:.0f}/座位·小时",
+                    color=ramp[min(k, 3)], fontsize=8.8, ha="left",
+                    va="center", fontweight="bold", zorder=4)
 
     for k, (name, d, p, g) in enumerate(points):
         ax.plot([d], [p], "o", markersize=11, color=SERIES[k],
                 markeredgecolor=SURFACE, markeredgewidth=2.2, zorder=6)
-        ax.annotate(f"{name}\n${g:.1f}/座位·小时", (d, p),
-                    textcoords="offset points", xytext=(12, -4), fontsize=9.5,
-                    color=SERIES[k], fontweight="bold", zorder=6)
+        dx, dy, ha = (12, -18, "left") if k != 2 else (-12, -18, "right")
+        ax.annotate(f"{name}  ${g:.1f}/座位·小时", (d, p),
+                    textcoords="offset points", xytext=(dx, dy), fontsize=9.5,
+                    ha=ha, color=SERIES[k], fontweight="bold", zorder=6)
 
     _style(ax, "等贡献前沿：可行业态落在过原点的射线族上",
            xlabel="占座时长 d + 清台 τ（分钟）", ylabel="人均消费（美元，税前）")
-    ax.set_xlim(10, 130)
-    ax.set_ylim(0, 78)
+    ax.set_xlim(XLO, XHI)
+    ax.set_ylim(0, YHI)
     fig.text(0.09, -0.02,
              "同一条射线上的所有 (客单价, 占座时长) 组合，在座位受限时盈利效率完全等价 ——"
              r"\$25 / 30 分钟的面  ≡  \$50 / 60 分钟的川菜",

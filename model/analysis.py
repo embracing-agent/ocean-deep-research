@@ -337,10 +337,10 @@ def monte_carlo(spec: FormatSpec, n: int = 3000, m_median: float = REFERENCE_M,
         m2 = replace(macro,
                      rent_psf_month=macro.rent_psf_month * k_rent,
                      min_wage=macro.min_wage * k_wage)
-        f2 = simulate_table_dynamics(s2, hours=120, seed=rng.randint(1, 10**6)).seat_fill \
-            if abs(k_dwell - 1) > 1e-9 else fill0
-
-        p = profit_and_loss(s2, m, m2, fill=f2)
+        # 直接复用 fill0：本次抽样只扰动了用餐时长，而 φ 与用餐时长无关
+        # （见 engine.simulate_table_dynamics 的缓存说明），桌型配比与同行人数分布未变。
+        # 在这里重跑离散事件模拟不仅白花 3 倍算力，还会往结果里注入纯粹的模拟噪声。
+        p = profit_and_loss(s2, m, m2, fill=fill0)
         ebitdas.append(p.ebitda)
         roics.append(p.roic)
         if p.owner_cash_flow < 0:
@@ -359,7 +359,7 @@ def monte_carlo(spec: FormatSpec, n: int = 3000, m_median: float = REFERENCE_M,
             m3 = replace(m2,
                          rent_psf_month=m2.rent_psf_month * rent_mult,
                          min_wage=m2.min_wage * wage_mult)
-            py = profit_and_loss(s3, m, m3, fill=f2)
+            py = profit_and_loss(s3, m, m3, fill=fill0)
             cf = py.ebitda * 12.0
             alive *= (1.0 - spec.annual_failure_hazard)
             # 失败情景：当年止损，残值约为设备的 20%
@@ -551,7 +551,7 @@ def optimize_table_mix(spec: FormatSpec, seats_target: Optional[int] = None,
         seats_target = spec.seats
     best = None
     results = []
-    for n1 in range(0, 15):
+    for n1 in range(0, 15, 2):
         for n2 in range(0, 17):
             for n4 in range(0, 15):
                 rem = seats_target - n1 - 2 * n2 - 4 * n4
@@ -564,7 +564,7 @@ def optimize_table_mix(spec: FormatSpec, seats_target: Optional[int] = None,
                     mix = {k: v for k, v in
                            ((1, n1), (2, n2), (4, n4), (6, n6)) if v}
                     s2 = replace(spec, table_mix=mix, seats=seats, tables=tables)
-                    td = simulate_table_dynamics(s2, hours=120, seed=3, n_seeds=2)
+                    td = simulate_table_dynamics(s2, hours=100, seed=3, n_seeds=2)
                     cph = s2.seat_capacity_cph(td.seat_fill)
                     results.append({
                         "n1": n1, "n2": n2, "n4": n4, "n6": n6,
@@ -575,7 +575,7 @@ def optimize_table_mix(spec: FormatSpec, seats_target: Optional[int] = None,
                     if best is None or cph > best["cph"]:
                         best = results[-1]
     results.sort(key=lambda r: -r["cph"])
-    cur = simulate_table_dynamics(spec, hours=120, seed=3, n_seeds=2)
+    cur = simulate_table_dynamics(spec, hours=100, seed=3, n_seeds=2)
     return {
         "name": spec.name,
         "best": best,
@@ -596,7 +596,7 @@ def optimize_footprint(spec: FormatSpec, m: float = REFERENCE_M,
     太小 → 高峰被截断、丢客；太大 → 租金与最低值班人力被空座吃掉。
     """
     if scale_grid is None:
-        scale_grid = [0.30 + 0.05 * i for i in range(31)]  # 0.30x .. 1.80x
+        scale_grid = [0.22 + 0.04 * i for i in range(36)]  # 0.22x .. 1.62x
     dining_sqft = spec.total_sqft - spec.kitchen_sqft
     rows = []
     for g in scale_grid:
@@ -625,7 +625,7 @@ def optimize_footprint(spec: FormatSpec, m: float = REFERENCE_M,
 
 
 def iso_profit_frontier(macro: Macro = MACRO,
-                        targets: Sequence[float] = (12.0, 18.0, 24.0, 30.0),
+                        targets: Sequence[float] = (12.0, 18.0, 24.0, 32.0),
                         dwell_grid: Optional[Sequence[float]] = None):
     """(客单价, 占座时长) 平面上的等贡献毛利曲线。
 

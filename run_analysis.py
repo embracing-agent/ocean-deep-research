@@ -248,9 +248,10 @@ def main():
     paths.append(charts.chart_unit_economics(decomp))
     paths.append(charts.chart_demand_sweep(sweep, regimes, REFERENCE_M))
     paths.append(charts.chart_phase(m_grid, rent_grid, winner, names))
-    days = [simulate_day(s, REFERENCE_M, fills[s.name], weekend=False)
+    # 用周末剖面：产能约束只在周末高峰真正咬合，工作日看不出差别
+    days = [simulate_day(s, REFERENCE_M, fills[s.name], weekend=True)
             for s in FORMATS]
-    paths.append(charts.chart_hourly(days, names))
+    paths.append(charts.chart_hourly(days, names, weekend_label="周末"))
     paths.append(charts.chart_montecarlo(mcs))
     paths.append(charts.chart_tornado(torn))
 
